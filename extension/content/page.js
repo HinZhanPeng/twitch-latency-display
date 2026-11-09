@@ -60,7 +60,7 @@
   let settingsLoaded = false;
   document.addEventListener('tld:settings', (e) => {
     try {
-      const next = JSON.parse(e.detail);
+      const next = sanitize(JSON.parse(e.detail));
       const wasLoaded = settingsLoaded;
       settingsLoaded = true;
       if (wasLoaded && next.resetToken !== S.resetToken) {
@@ -76,6 +76,21 @@
     } catch { /* ignore malformed */ }
   });
   document.dispatchEvent(new CustomEvent('tld:request-settings'));
+
+  // The event is visible to (and forgeable by) page scripts, so accept only known
+  // keys with sane values; anything else keeps the current setting.
+  function sanitize(raw) {
+    const out = {};
+    if (!raw || typeof raw !== 'object') return out;
+    const n = (v, lo, hi) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : undefined);
+    if (typeof raw.catchUp === 'boolean') out.catchUp = raw.catchUp;
+    if (typeof raw.showBadge === 'boolean') out.showBadge = raw.showBadge;
+    if (raw.mode === 'lowest' || raw.mode === 'target') out.mode = raw.mode;
+    const tl = n(raw.targetLatency, 1, 30); if (tl !== undefined) out.targetLatency = tl;
+    const mr = n(raw.maxRate, 1, 1.5); if (mr !== undefined) out.maxRate = mr;
+    if (typeof raw.resetToken === 'number' && Number.isFinite(raw.resetToken)) out.resetToken = raw.resetToken;
+    return out;
+  }
 
   function loadBufTarget(ll) {
     try {
@@ -503,8 +518,9 @@
     let hideTimer;
     bc?.addEventListener('message', (e) => {
       const d = e.data;
-      if (!d || d.channel !== want) return;
-      el.textContent = `${d.lat.toFixed(1)}s${d.rate > 1.004 ? ` · ${d.rate.toFixed(2)}×` : ''}`;
+      if (!d || d.channel !== want || typeof d.lat !== 'number' || !Number.isFinite(d.lat)) return;
+      const rate = typeof d.rate === 'number' && Number.isFinite(d.rate) ? d.rate : 1;
+      el.textContent = `${d.lat.toFixed(1)}s${rate > 1.004 ? ` · ${rate.toFixed(2)}×` : ''}`;
       el.style.display = 'block';
       clearTimeout(hideTimer);
       hideTimer = setTimeout(() => { el.style.display = 'none'; }, 3000);
