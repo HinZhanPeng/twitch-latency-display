@@ -54,9 +54,9 @@ English
 | Asset | Dimensions | Status | Filename |
 |-------|-----------|--------|----------|
 | Store Icon | 128×128 PNG | ✅ Ready | `extension/icons/icon-128.png` |
-| Screenshot 1 | 1280×800 or 640×400 | ⬜ Not created | |
-| Screenshot 2 | 1280×800 or 640×400 | ⬜ Not created | |
-| Screenshot 3 | 1280×800 or 640×400 | ⬜ Not created | |
+| Screenshot 1 | 1280×800 | ✅ Ready | `store-assets/screenshot-1-badge.png` |
+| Screenshot 2 | 1280×800 | ✅ Ready | `store-assets/screenshot-2-graph.png` |
+| Screenshot 3 | 1280×800 | ✅ Ready | `store-assets/screenshot-3-settings.png` |
 | Small Promo Tile | 440×280 | ⬜ Not created | |
 
 ### Screenshot Notes
@@ -64,7 +64,8 @@ English
 2. The badge hover graph showing latency/buffer over 60 s, ideally during a catch-up (speed shown).
 3. The settings popup open next to the player.
 
-Avoid showing Twitch's logo prominently, and blur or pick a stream you have permission to show.
+Screenshots 1 and 2 are captured from Topson's live Dota 2 stream (2026-11-09). If a reviewer
+objects to third-party stream content, retake them on your own stream.
 
 ## Permissions Justification
 
