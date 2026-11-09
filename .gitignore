@@ -1,0 +1,23 @@
+# Packaged builds
+*.zip
+*.crx
+*.pem
+
+# Dependencies (if tooling is added later)
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+
+# Env
+.env
+.env.*

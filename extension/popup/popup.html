@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Latency Catch-Up</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1>Latency Catch-Up</h1>
+
+  <label class="row">
+    <span>
+      <strong>Auto catch-up</strong>
+      <small>Speeds playback up slightly whenever you fall behind live.</small>
+    </span>
+    <input type="checkbox" id="catchUp" class="switch">
+  </label>
+
+  <fieldset id="modeSet">
+    <legend>Goal</legend>
+    <label class="radio">
+      <input type="radio" name="mode" value="lowest">
+      <span><strong>Lowest possible</strong>
+        <small>Learns the smallest buffer your connection can hold without stalling.</small></span>
+    </label>
+    <label class="radio">
+      <input type="radio" name="mode" value="target">
+      <span><strong>Fixed target</strong>
+        <small>Hold latency near
+          <input type="number" id="targetLatency" min="1" max="30" step="0.5"> s</small></span>
+    </label>
+  </fieldset>
+
+  <label class="block">
+    <span><strong>Max speed</strong> <output id="maxRateOut"></output></span>
+    <input type="range" id="maxRate" min="1.05" max="1.5" step="0.05">
+    <small>Pitch is preserved. Above 1.20× speech starts to sound rushed.</small>
+  </label>
+
+  <label class="row">
+    <span><strong>Show badge on player</strong></span>
+    <input type="checkbox" id="showBadge" class="switch">
+  </label>
+
+  <div class="foot">
+    <button id="reset" type="button">Reset learned buffer</button>
+    <span id="status" role="status"></span>
+  </div>
+
+  <p class="tip">For the lowest latency, turn on <em>Low Latency</em> in the Twitch player's Settings › Advanced. Click the badge on the player to jump to live.</p>
+
+  <script src="popup.js"></script>
+</body>
+</html>
