@@ -4,56 +4,68 @@
   if (window.__tldLoaded) return;
   window.__tldLoaded = true;
 
+  // The catch-up logic and its tuning constants live in controller.js (loaded first).
+  const { C, createController } = window.__tldController;
+  delete window.__tldController;
+
   // ---------------------------------------------------------------- config
-  const TICK_MS = 250;
   const HISTORY_MS = 60_000;
-  const LOOKUP_EVERY_MS = 4000;
-
-  const BUF_FLOOR = 0.4;        // never aim for less buffer than this (s)
-  const BUF_CEIL = 4;           // adaptive target never grows past this (s)
-  const BUF_START = 0.8;        // first guess before anything is learned (s)
-  const STALL_PENALTY = 0.3;    // buffer added to the target after a stall (s)
-  const STALL_COOLDOWN_MS = 10_000; // no catch-up right after a stall
-  const DECAY_STEP = 0.05;      // buffer trimmed from the target per quiet period (s)
-  const DECAY_EVERY_MS = 30_000;
-  const FAILED_MEMORY_MS = 10 * 60_000; // after a stall, stay above the failed level this long
-
-  // Normal-latency streams arrive in ~2 s chunks, so the buffer is a sawtooth
-  // (e.g. 2.2 → 0.3 → 2.2 s). Control on its low point over this window, not
-  // on the instantaneous value, or catch-up drains the trough into a stall.
-  const TROUGH_WINDOW_MS = 8000;
-
-  const ENGAGE_AT = 0.25;       // start speeding up when this far over target (s)
-  const RELEASE_AT = 0.03;      // stop once within this of target (s)
-  const BIG_GAP = 6;            // further behind than this: seek instead of speeding (s)
-  const SLEW_UP = 0.02;         // max rate increase per tick
-  const SLEW_DOWN = 0.05;       // max rate decrease per tick
+  const LOOKUP_EVERY_MS = 4000;  // re-check a known player this often
+  const LOOKUP_RETRY_MS = 1000;  // search for a missing one this often
+  const BLIND_AFTER_MS = 10_000; // a stream plays this long with no readable player: say so
 
   const CHANNEL = 'twitch-latency-display';
+  const bc = 'BroadcastChannel' in window ? new BroadcastChannel(CHANNEL) : null;
+
+  // ---------------------------------------------------------------- popout chat
+  // No player here: just show the latency the player tab broadcasts, and stop.
+  const pop = location.pathname.match(/^\/popout\/([^/]+)\/chat/i);
+  if (pop) {
+    const want = pop[1].toLowerCase();
+    const el = document.createElement('div');
+    el.style.cssText = 'position:fixed;right:12px;bottom:96px;z-index:9999;padding:3px 9px;border-radius:999px;' +
+      'background:rgba(14,14,16,.8);color:#efeff1;font:600 12px/18px Inter,Roobert,Arial,sans-serif;' +
+      'font-variant-numeric:tabular-nums;pointer-events:none;display:none';
+    document.body.appendChild(el);
+    let hideTimer;
+    bc?.addEventListener('message', (e) => {
+      const d = e.data;
+      if (!d || d.channel !== want || typeof d.lat !== 'number' || !Number.isFinite(d.lat)) return;
+      const rate = typeof d.rate === 'number' && Number.isFinite(d.rate) ? d.rate : 1;
+      el.textContent = `${d.lat.toFixed(1)}s${rate > 1.004 ? ` · ${rate.toFixed(2)}×` : ''}`;
+      el.style.display = 'block';
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => { el.style.display = 'none'; }, 3000);
+    });
+    return;
+  }
+
   // Learned separately: low-latency and normal streams need very different buffers.
   const storeKey = (ll) => (ll ? 'tld.bufTarget.ll' : 'tld.bufTarget.std');
+  const RESET_KEY = 'tld.resetToken'; // the popup reset this browser applied last
 
+  // Starting values only; the bridge sends the stored settings (see shared/defaults.js).
   let S = { catchUp: true, mode: 'lowest', targetLatency: 3, maxRate: 1.15, showBadge: true, resetToken: 0 };
+
+  // Catch-up state: learned buffer target, current rate, stall memory.
+  const ctl = createController({ bufTarget: loadBufTarget(true), now: performance.now() });
 
   const st = {
     mp: null,
     lastLookup: -Infinity,
+    lastTick: performance.now(),
     video: null,
-    rate: 1,
-    engaged: false,
     weSetRate: false,
     ll: true,                 // is the current stream low-latency?
-    bufTarget: loadBufTarget(true),
-    bufHist: [],              // recent {t, buf} for the trough
     prevState: null,
-    failedAt: 0,
-    lastStall: -Infinity,
-    lastDecay: performance.now(),
     lastSeek: -Infinity,
     lastPlay: -Infinity,
     stalls: 0,
     hist: [],
     snap: null,
+    blindSince: null,         // when a playing stream first had no readable player
+    blind: false,
+    blindWarned: false,
   };
 
   // ---------------------------------------------------------------- settings
@@ -61,21 +73,30 @@
   document.addEventListener('tld:settings', (e) => {
     try {
       const next = sanitize(JSON.parse(e.detail));
-      const wasLoaded = settingsLoaded;
-      settingsLoaded = true;
-      if (wasLoaded && next.resetToken !== S.resetToken) {
+      const token = next.resetToken;
+      // Reset when the token changes while this tab is open, and also when it differs
+      // from the one this browser last applied, so a reset pressed with no Twitch tab
+      // open still lands on the next load.
+      if (token !== undefined && ((settingsLoaded && token !== S.resetToken) || resetPending(token))) {
         try {
           localStorage.removeItem(storeKey(true));
           localStorage.removeItem(storeKey(false));
+          localStorage.setItem(RESET_KEY, String(token));
         } catch { /* storage blocked */ }
-        st.bufTarget = BUF_START;
+        ctl.bufTarget = C.BUF_START;
         st.stalls = 0;
       }
+      settingsLoaded = true;
       S = { ...S, ...next };
       if (!S.catchUp) release();
     } catch { /* ignore malformed */ }
   });
   document.dispatchEvent(new CustomEvent('tld:request-settings'));
+
+  function resetPending(token) {
+    try { return token !== (Number(localStorage.getItem(RESET_KEY)) || 0); }
+    catch { return false; } // storage blocked: nothing is persisted, so nothing to clear
+  }
 
   // The event is visible to (and forgeable by) page scripts, so accept only known
   // keys with sane values; anything else keeps the current setting.
@@ -95,22 +116,24 @@
   function loadBufTarget(ll) {
     try {
       const v = Number(localStorage.getItem(storeKey(ll)));
-      if (v >= BUF_FLOOR && v <= BUF_CEIL) return v;
+      if (v >= C.BUF_FLOOR && v <= C.BUF_CEIL) return v;
     } catch { /* storage blocked */ }
-    return BUF_START;
+    return C.BUF_START;
   }
   function saveBufTarget() {
-    try { localStorage.setItem(storeKey(st.ll), st.bufTarget.toFixed(2)); } catch { /* storage blocked */ }
+    try { localStorage.setItem(storeKey(st.ll), ctl.bufTarget.toFixed(2)); } catch { /* storage blocked */ }
   }
 
   // ---------------------------------------------------------------- helpers
-  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
   function call(obj, name) {
     try {
       const fn = obj?.[name];
       return typeof fn === 'function' ? fn.call(obj) : undefined;
     } catch { return undefined; }
+  }
+  function hasFn(obj, name) {
+    try { return typeof obj?.[name] === 'function'; } catch { return false; }
   }
 
   function fiberOf(el) {
@@ -232,8 +255,7 @@
   }
 
   function release() {
-    st.engaged = false;
-    st.rate = 1;
+    ctl.release();
     if (st.weSetRate) setRate(1);
   }
 
@@ -242,7 +264,7 @@
     if (!v) return;
     const end = bufferedEnd(v);
     if (end === undefined) return;
-    const to = Math.min(v.currentTime + seconds, end - st.bufTarget);
+    const to = Math.min(v.currentTime + seconds, end - ctl.bufTarget);
     if (to > v.currentTime + 0.2) {
       st.lastSeek = performance.now();
       v.currentTime = to;
@@ -256,7 +278,7 @@
     if (end === undefined) return;
     st.lastSeek = performance.now();
     if (v.paused) v.play().catch(() => {});
-    v.currentTime = Math.max(v.currentTime, end - st.bufTarget);
+    v.currentTime = Math.max(v.currentTime, end - ctl.bufTarget);
   }
 
   function onPlay() { st.lastPlay = performance.now(); }
@@ -265,70 +287,30 @@
   // (Twitch sometimes recovers a stall by restarting at live without 'waiting').
   function registerStall() {
     const now = performance.now();
-    if (now - st.lastStall < 3000) return;         // same stall reported twice
+    if (now - ctl.lastStall < 3000) return;        // same stall reported twice
     if (now - st.lastSeek < 2000) return;          // our own seek, not a real stall
     if (now - st.lastPlay < 3000) return;          // normal refill after resuming from pause
     if (!st.snap?.live || st.video?.paused) return;
     st.stalls++;
-    st.lastStall = now;
-    if (S.catchUp) {
-      st.failedAt = st.bufTarget;                  // this level was too low; don't trim back to it soon
-      st.bufTarget = Math.min(BUF_CEIL, st.bufTarget + STALL_PENALTY);
+    if (ctl.stall(now, S.catchUp)) {               // raises the learned target
       saveBufTarget();
       release();
     }
   }
   const onWaiting = registerStall;
 
-  function trough(now, buf) {
-    st.bufHist.push({ t: now, buf });
-    while (st.bufHist.length && now - st.bufHist[0].t > TROUGH_WINDOW_MS) st.bufHist.shift();
-    let low = buf;
-    for (const p of st.bufHist) if (p.buf < low) low = p.buf;
-    return low;
-  }
-
-  function control(now, lat, buf) {
-    const low = trough(now, buf);
-    if (!S.catchUp || !st.snap.live || st.video.paused) { release(); return; }
-    if (now - st.lastStall < STALL_COOLDOWN_MS) { release(); return; }
-
-    if (now - st.lastStall > DECAY_EVERY_MS && now - st.lastDecay > DECAY_EVERY_MS) {
-      st.lastDecay = now;
-      const floor = now - st.lastStall < FAILED_MEMORY_MS ? Math.max(BUF_FLOOR, st.failedAt + 0.1) : BUF_FLOOR;
-      const next = Math.max(Math.min(floor, st.bufTarget), st.bufTarget - DECAY_STEP);
-      if (next !== st.bufTarget) { st.bufTarget = next; saveBufTarget(); }
-    }
-
-    // How far behind are we? Measured on the buffer's low point, and in both modes
-    // that low point must never be pushed under the learned minimum.
-    const overBuffer = low - st.bufTarget;
-    const excess = S.mode === 'target' ? Math.min(lat - S.targetLatency, overBuffer) : overBuffer;
-
-    if (excess > BIG_GAP && now - st.lastSeek > 5000) { seekBy(excess); return; }
-
-    if (!st.engaged && excess > ENGAGE_AT) st.engaged = true;
-    else if (st.engaged && excess <= RELEASE_AT) st.engaged = false;
-
-    const want = st.engaged ? 1 + clamp(0.04 + excess * 0.12, 0, S.maxRate - 1) : 1;
-    st.rate = buf < st.bufTarget * 0.6
-      ? 1                                            // buffer is thin: back off right away
-      : clamp(want, st.rate - SLEW_DOWN, st.rate + SLEW_UP);
-    if (Math.abs(st.rate - 1) < 0.004) st.rate = 1;
-    setRate(st.rate);
-  }
-
   // ---------------------------------------------------------------- main loop
-  const bc = 'BroadcastChannel' in window ? new BroadcastChannel(CHANNEL) : null;
   const channelName = () => (location.pathname.split('/')[1] || '').toLowerCase();
 
   function tick() {
     const now = performance.now();
+    const dt = now - st.lastTick;
+    st.lastTick = now;
 
-    if (!st.mp || now - st.lastLookup > LOOKUP_EVERY_MS) {
+    if (now - st.lastLookup > (st.mp ? LOOKUP_EVERY_MS : LOOKUP_RETRY_MS)) {
       st.lastLookup = now;
       const mp = findPlayer();
-      if (mp !== st.mp) { st.mp = mp; st.engaged = false; }
+      if (mp !== st.mp) { st.mp = mp; ctl.engaged = false; }
     }
 
     const video = pickVideo(st.mp);
@@ -338,8 +320,8 @@
       if (st.weSetRate && st.video) nativeRate.set.call(st.video, 1);
       unlockRate(st.video);
       st.weSetRate = false;
-      st.rate = 1;
-      st.bufHist = [];
+      ctl.rate = 1;
+      ctl.bufHist = [];
       st.video = video;
       video?.addEventListener('waiting', onWaiting);
       video?.addEventListener('play', onPlay);
@@ -355,8 +337,8 @@
     const ll = lowLatency !== false;
     if (ll !== st.ll) {
       st.ll = ll;
-      st.bufTarget = loadBufTarget(ll);
-      st.bufHist = [];
+      ctl.bufTarget = loadBufTarget(ll);
+      ctl.bufHist = [];
       release();
     }
 
@@ -367,13 +349,31 @@
 
     st.snap = { live, lat, buf, lowLatency, paused: !!video?.paused };
 
-    if (video && lat !== undefined && buf !== undefined) control(now, lat, buf);
-    else release();
+    // A stream is clearly playing on a channel page, yet the player object (or its
+    // latency method) can't be found: most likely Twitch changed its internals.
+    const unreadable = !!video && !video.paused && video.readyState >= 2 &&
+      isLivePath() && !!channelName() &&
+      (!st.mp || (lat === undefined && !hasFn(st.mp, 'getLiveLatency')));
+    if (!unreadable) st.blindSince = null;
+    else st.blindSince ??= now;
+    st.blind = unreadable && now - st.blindSince > BLIND_AFTER_MS;
+    if (st.blind && !st.blindWarned) {
+      st.blindWarned = true;
+      console.warn('[Latency Catch-Up] A stream is playing but the Twitch player could not be read. ' +
+        'Twitch may have changed its player; see findPlayer() in content/page.js.');
+    }
+
+    if (video && lat !== undefined && buf !== undefined) {
+      const r = ctl.step({ now, dt, lat, buf, playing: live && !video.paused, lastSeek: st.lastSeek }, S);
+      if (r.targetChanged) saveBufTarget();
+      if (r.seek) seekBy(r.seek);
+      else setRate(ctl.rate);
+    } else release();
 
     if (live) {
       st.hist.push({ t: now, lat, buf });
       while (st.hist.length && now - st.hist[0].t > HISTORY_MS) st.hist.shift();
-      bc?.postMessage({ channel: channelName(), lat, buf, rate: st.rate });
+      bc?.postMessage({ channel: channelName(), lat, buf, rate: ctl.rate });
     }
 
     badge.render();
@@ -384,7 +384,7 @@
     :host { all: initial; position: absolute; top: 10px; left: 10px; z-index: 1000;
       font-family: Inter, Roobert, "Helvetica Neue", Helvetica, Arial, sans-serif; }
     .pill { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
-      background: rgba(14,14,16,.72); backdrop-filter: blur(6px); color: #efeff1;
+      background: rgba(14,14,16,.8); color: #efeff1;
       font-size: 13px; font-weight: 600; line-height: 18px; cursor: pointer; user-select: none;
       font-variant-numeric: tabular-nums; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
     .pill:hover { background: rgba(14,14,16,.9); }
@@ -404,6 +404,9 @@
     .hint { margin-top: 6px; color: #adadb8; font-size: 11px; }
     .warn { margin-top: 6px; color: #ffd37a; font-size: 11px; display: none; }
     .warn.on { display: block; }
+    .note { display: none; color: #ffd37a; font-size: 11px; }
+    :host(.blind) .note { display: block; }
+    :host(.blind) .stats { display: none; }
   `;
 
   const badge = (() => {
@@ -415,6 +418,8 @@
         <span class="dot"></span><span class="lat">–</span><span class="rate"></span>
       </div>
       <div class="wrap"><div class="panel">
+        <div class="note">Can't read latency from the Twitch player. Twitch may have changed it; check for an extension update.</div>
+        <div class="stats">
         <canvas width="472" height="112"></canvas>
         <div class="legend"><span><i style="background:#bf94ff"></i>Latency</span><span><i style="background:#7d7d8a"></i>Buffer</span><span><i style="background:#00f593"></i>Target</span></div>
         <div class="row"><span>Latency to broadcaster</span><b data-k="lat"></b></div>
@@ -424,6 +429,7 @@
         <div class="row"><span>Stalls this session</span><b data-k="stalls"></b></div>
         <div class="warn">Low-latency mode looks off. Turn it on in the player's Settings › Advanced.</div>
         <div class="hint">Click the badge to jump to live.</div>
+        </div>
       </div></div>`;
 
     const $ = (s) => root.querySelector(s);
@@ -454,7 +460,7 @@
       if (h.length < 2) return;
       const now = h[h.length - 1].t;
       const target = S.mode === 'target' ? S.targetLatency : null;
-      let max = Math.max(2, target ?? 0, st.bufTarget);
+      let max = Math.max(2, target ?? 0, ctl.bufTarget);
       for (const p of h) max = Math.max(max, p.lat, p.buf);
       max *= 1.15;
       const x = (t) => W - ((now - t) / HISTORY_MS) * W;
@@ -463,7 +469,7 @@
       ctx.lineWidth = 2;
       ctx.setLineDash([6, 6]);
       ctx.strokeStyle = 'rgba(0,245,147,.7)';
-      const ty = y(target ?? st.bufTarget);
+      const ty = y(target ?? ctl.bufTarget);
       ctx.beginPath(); ctx.moveTo(0, ty); ctx.lineTo(W, ty); ctx.stroke();
       ctx.setLineDash([]);
 
@@ -481,23 +487,31 @@
 
     function render() {
       const s = st.snap;
-      if (!S.showBadge || !s?.live || !mount()) {
+      const blind = st.blind && !s?.live;
+      if (!S.showBadge || !(s?.live || blind) || !mount()) {
         if (host.isConnected) host.remove();
+        return;
+      }
+      host.classList.toggle('blind', blind);
+      if (blind) {
+        text(latEl, '?');
+        dot.className = 'dot';
+        rateEl.classList.remove('on');
         return;
       }
       text(latEl, s.lat < 10 ? `${s.lat.toFixed(1)}s` : `${Math.round(s.lat)}s`);
       dot.className = `dot ${s.lat <= 2.5 ? 'good' : s.lat <= 5 ? 'ok' : 'bad'}`;
-      const speeding = st.rate > 1.004;
+      const speeding = ctl.rate > 1.004;
       rateEl.classList.toggle('on', speeding);
-      if (speeding) text(rateEl, `${st.rate.toFixed(2)}×`);
+      if (speeding) text(rateEl, `${ctl.rate.toFixed(2)}×`);
 
       if (!hovering) return;
       text(fields.lat, `${s.lat.toFixed(2)} s`);
       text(fields.buf, `${s.buf.toFixed(2)} s`);
-      text(fields.rate, `${st.rate.toFixed(2)}×`);
+      text(fields.rate, `${ctl.rate.toFixed(2)}×`);
       text(fields.mode, !S.catchUp ? 'Off'
         : S.mode === 'target' ? `Target ${S.targetLatency}s`
-        : `Lowest (buffer ${st.bufTarget.toFixed(2)}s)`);
+        : `Lowest (buffer ${ctl.bufTarget.toFixed(2)}s)`);
       text(fields.stalls, String(st.stalls));
       warn.classList.toggle('on', s.lowLatency === false);
       drawGraph();
@@ -506,27 +520,5 @@
     return { render };
   })();
 
-  // ---------------------------------------------------------------- popout chat
-  const pop = location.pathname.match(/^\/popout\/([^/]+)\/chat/i);
-  if (pop) {
-    const want = pop[1].toLowerCase();
-    const el = document.createElement('div');
-    el.style.cssText = 'position:fixed;right:12px;bottom:96px;z-index:9999;padding:3px 9px;border-radius:999px;' +
-      'background:rgba(14,14,16,.8);color:#efeff1;font:600 12px/18px Inter,Roobert,Arial,sans-serif;' +
-      'font-variant-numeric:tabular-nums;pointer-events:none;display:none';
-    document.body.appendChild(el);
-    let hideTimer;
-    bc?.addEventListener('message', (e) => {
-      const d = e.data;
-      if (!d || d.channel !== want || typeof d.lat !== 'number' || !Number.isFinite(d.lat)) return;
-      const rate = typeof d.rate === 'number' && Number.isFinite(d.rate) ? d.rate : 1;
-      el.textContent = `${d.lat.toFixed(1)}s${rate > 1.004 ? ` · ${rate.toFixed(2)}×` : ''}`;
-      el.style.display = 'block';
-      clearTimeout(hideTimer);
-      hideTimer = setTimeout(() => { el.style.display = 'none'; }, 3000);
-    });
-    return; // popout chat has no player to control
-  }
-
-  setInterval(tick, TICK_MS);
+  setInterval(tick, C.TICK_MS);
 })();

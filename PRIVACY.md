@@ -1,6 +1,6 @@
 # Privacy Policy: Latency Catch-Up for Twitch
 
-Last updated: 2026-11-09
+Last updated: 2026-11-10
 
 ## What data we collect
 
@@ -15,7 +15,8 @@ browsing history, or viewing activity to the developer or to anyone else.
   [Google's privacy policy](https://policies.google.com/privacy). The developer never sees them.
 - **A learned buffer size** (one number for low-latency streams and one for normal streams),
   saved in your browser's local storage for twitch.tv so the extension remembers what your
-  connection can handle.
+  connection can handle. Next to it is a marker for the last time you pressed **Reset
+  learned buffer**, so a reset is applied once and not repeated.
 
 ## Where the extension runs
 

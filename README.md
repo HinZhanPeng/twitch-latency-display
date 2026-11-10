@@ -22,15 +22,21 @@ For the lowest latency, turn on **Low Latency** in the Twitch player's Settings 
   (default max 1.15×, pitch preserved) until you're back at the edge, then returns to 1×.
   More than 6 s behind, it seeks instead.
 - **Lowest-possible mode** (default) shrinks the buffer toward a learned minimum. Every
-  stall adds 0.3 s to that minimum and pauses catch-up for 10 s; every 30 s without a stall
-  trims 0.05 s off (floor 0.4 s). Low-latency and normal streams each have their own
-  learned value, kept per browser in `localStorage`.
+  stall adds 0.3 s to that minimum and pauses catch-up for 10 s; every 30 s of stall-free
+  playback with the buffer actually down at that minimum trims 0.05 s off (floor 0.4 s).
+  Time spent paused, or with the buffer well above the minimum, does not count. Low-latency
+  and normal streams each have their own learned value, kept per browser in `localStorage`.
+  **Reset learned buffer** in the popup clears both; if no Twitch tab is open at the time,
+  it takes effect on the next one you open.
 - **Normal-latency streams** deliver video in ~2 s chunks, so the buffer swings up and
   down. Catch-up works from the lowest point of the buffer over the last 8 s, so it
   never drains a dip into a stall.
 - **Fixed-target mode**: holds latency near a number you choose (still never drains the
   buffer below the learned minimum).
 - **Popout chat** shows a small latency pill fed from the player tab.
+- **If the player can't be read** (a stream plays for 10 s but the extension can't find
+  Twitch's player object), the badge shows **?** and a warning is logged to the console,
+  instead of the badge silently disappearing.
 
 ## How it works
 
@@ -43,11 +49,24 @@ For the lowest latency, turn on **Low Latency** in the Twitch player's Settings 
   active, the script shadows `playbackRate` on that one `<video>` element and drops the
   core's writes. It removes the shadow as soon as speed is back to 1×, so Twitch regains
   full control.
+- `content/controller.js` holds the catch-up decisions (when to speed up, by how much, when
+  to seek, how the learned buffer grows and shrinks) and all the tuning constants. It has no
+  DOM access, so it can be tested outside the browser.
 - `content/bridge.js` (isolated world) passes settings from `chrome.storage.sync` to the page.
+- `shared/defaults.js` holds the default settings used by the bridge and the popup.
 - `popup/` holds the settings UI.
+
+## Development
+
+- `npm test` (or `node --test`) runs `test/controller.test.js`: the controller against a
+  simulated smooth stream, a simulated 2 s-chunk stream, stalls, seeks, and throttled ticks.
+  No dependencies to install. Run it after changing any constant in `controller.js`.
+- `powershell -ExecutionPolicy Bypass -File package.ps1` builds the Web Store zip in `dist/`.
+  Bump `version` in `extension/manifest.json` first.
 
 ## Caveat
 
 The player hooks (`mediaPlayerInstance`, `getLiveLatency`, the worker's rate resets) are
 Twitch internals. They were verified working on 2026-11-08, but a Twitch player update could
-change them. If the badge stops appearing, start by checking `findPlayer()` in `page.js`.
+change them. If the badge shows **?** or stops appearing, start by checking `findPlayer()`
+in `page.js`.

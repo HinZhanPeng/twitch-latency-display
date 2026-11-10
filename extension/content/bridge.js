@@ -1,15 +1,7 @@
 // Isolated-world bridge: page.js (MAIN world) has no chrome.* access, so this
 // script reads settings from chrome.storage and hands them over as DOM events.
+// DEFAULTS comes from shared/defaults.js, loaded just before this file.
 'use strict';
-
-const DEFAULTS = {
-  catchUp: true,
-  mode: 'lowest',      // 'lowest' = adaptive minimum buffer, 'target' = fixed latency target
-  targetLatency: 3,
-  maxRate: 1.15,
-  showBadge: true,
-  resetToken: 0,
-};
 
 async function push() {
   try {

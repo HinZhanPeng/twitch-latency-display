@@ -1,0 +1,7 @@
+{
+  "private": true,
+  "description": "Dev tooling only; nothing here ships in the extension package.",
+  "scripts": {
+    "test": "node --test"
+  }
+}

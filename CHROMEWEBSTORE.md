@@ -1,6 +1,6 @@
 # Chrome Web Store Listing — Latency Catch-Up for Twitch
 
-> Last Updated: 2026-11-09
+> Last Updated: 2026-11-10
 
 Copy-paste source for the Chrome Web Store Developer Dashboard. Not shipped in the package.
 
@@ -96,7 +96,7 @@ objects to third-party stream content, retake them on your own stream.
 
 Notes for accuracy:
 - Settings are stored with Chrome's sync storage, so Chrome itself syncs them across the user's signed-in browsers. The developer never receives them.
-- The learned minimum buffer (one number for low-latency streams, one for normal) is kept in the twitch.tv page's local storage on the user's device.
+- The learned minimum buffer (one number for low-latency streams, one for normal) is kept in the twitch.tv page's local storage on the user's device, along with a marker for the last "Reset learned buffer" press.
 - The extension makes no network requests of its own.
 
 ### Data Use Certification
@@ -127,6 +127,7 @@ https://github.com/HinZhanPeng/twitch-latency-display/blob/main/PRIVACY.md
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
 | 1.0.0 | 2026-11-09 | First release: latency badge with graph, auto catch-up, lowest-possible and fixed-target modes, popout chat indicator. | Draft |
+| 1.0.2 | 2026-11-10 | "Reset learned buffer" now works even when no Twitch tab is open. The learned buffer only shrinks after it has actually been tested. Catch-up stays steady in background tabs. The badge shows "?" if the Twitch player can't be read. Lighter on the page (no blur on the badge, less searching when no player is present). | Draft |
 
 ## Review Notes
 

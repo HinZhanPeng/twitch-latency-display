@@ -1,13 +1,5 @@
+// DEFAULTS comes from shared/defaults.js, loaded just before this file.
 'use strict';
-
-const DEFAULTS = {
-  catchUp: true,
-  mode: 'lowest',
-  targetLatency: 3,
-  maxRate: 1.15,
-  showBadge: true,
-  resetToken: 0,
-};
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -70,8 +62,14 @@ async function init() {
   });
   els.maxRate.addEventListener('change', () => save({ maxRate: Number(els.maxRate.value) }));
   $('reset').addEventListener('click', async () => {
-    await chrome.storage.sync.set({ resetToken: Date.now() });
-    flash('Buffer target reset');
+    try {
+      // Applied by open Twitch tabs right away, and by the next one opened otherwise.
+      await chrome.storage.sync.set({ resetToken: Date.now() });
+      flash('Buffer target reset');
+    } catch (err) {
+      flash('Could not reset');
+      console.error(err);
+    }
   });
 }
 
