@@ -128,6 +128,7 @@ https://github.com/HinZhanPeng/twitch-latency-display/blob/main/PRIVACY.md
 |---------|------|---------|--------|
 | 1.0.0 | 2026-11-09 | First release: latency badge with graph, auto catch-up, lowest-possible and fixed-target modes, popout chat indicator. | Draft |
 | 1.0.2 | 2026-11-10 | "Reset learned buffer" now works even when no Twitch tab is open. The learned buffer only shrinks after it has actually been tested. Catch-up stays steady in background tabs. The badge shows "?" if the Twitch player can't be read. Lighter on the page (no blur on the badge, less searching when no player is present). | Draft |
+| 1.0.3 | 2026-11-12 | If a stream gets stuck far behind live with nothing buffered to skip, the extension now resyncs through the Twitch player, automatically and on badge click. A catch-up seek that cannot be carried out falls back to speeding up. The popup explains that "Reset learned buffer" applies to all streams. | Draft |
 
 ## Review Notes
 

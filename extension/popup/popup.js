@@ -65,7 +65,7 @@ async function init() {
     try {
       // Applied by open Twitch tabs right away, and by the next one opened otherwise.
       await chrome.storage.sync.set({ resetToken: Date.now() });
-      flash('Buffer target reset');
+      flash('Reset for all streams');
     } catch (err) {
       flash('Could not reset');
       console.error(err);

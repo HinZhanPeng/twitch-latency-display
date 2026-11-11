@@ -14,6 +14,14 @@
   const LOOKUP_RETRY_MS = 1000;  // search for a missing one this often
   const BLIND_AFTER_MS = 10_000; // a stream plays this long with no readable player: say so
 
+  // Stuck far behind live with nothing buffered to skip: resync through Twitch's player.
+  const BASE_WINDOW_MS = 5000;     // a latency must hold this long to count as the stream's normal
+  const BEHIND_BY = 8;             // this far over the stream's normal latency (s) ...
+  const BEHIND_FOR_MS = 10_000;    // ... for this long, with no buffer to skip: resync
+  const RESYNC_EVERY_MS = 120_000; // at most one automatic resync per this long
+  const RESYNC_MAX = 3;            // automatic resyncs per stream before giving up
+  const RESYNC_GAP = 3;            // badge click resyncs when latency exceeds buffer by this (s)
+
   const CHANNEL = 'twitch-latency-display';
   const bc = 'BroadcastChannel' in window ? new BroadcastChannel(CHANNEL) : null;
 
@@ -58,7 +66,14 @@
     weSetRate: false,
     ll: true,                 // is the current stream low-latency?
     prevState: null,
-    lastSeek: -Infinity,
+    lastSeek: -Infinity,      // last seek actually performed (ours or a badge click)
+    lastSeekTry: -Infinity,   // last time the controller asked for a seek, performed or not
+    channel: '',
+    baseLat: Infinity,        // lowest latency this stream has held steadily
+    baseFrom: 0,              // ignore history older than this when finding baseLat
+    behindSince: null,        // when latency first sat far above baseLat with no buffer to skip
+    lastResync: -Infinity,
+    resyncs: 0,               // automatic resyncs on this stream
     lastPlay: -Infinity,
     stalls: 0,
     hist: [],
@@ -276,9 +291,61 @@
     if (!v) return;
     const end = bufferedEnd(v);
     if (end === undefined) return;
+    const to = end - ctl.bufTarget;
+    const s = st.snap;
+    // Nothing buffered to skip, yet far behind: the delay is upstream of the buffer.
+    if (to <= v.currentTime + 0.2 && s?.live && s.lat - (s.buf ?? 0) > RESYNC_GAP && resync()) return;
     st.lastSeek = performance.now();
     if (v.paused) v.play().catch(() => {});
-    v.currentTime = Math.max(v.currentTime, end - ctl.bufTarget);
+    v.currentTime = Math.max(v.currentTime, to);
+  }
+
+  // The player is fetching an old part of the stream, so seeking and speeding up have
+  // nothing to work with. Pausing and resuming through Twitch's own player (what its
+  // pause button does) makes it rejoin at the live edge.
+  function resync() {
+    const mp = st.mp;
+    if (!hasFn(mp, 'pause') || !hasFn(mp, 'play')) return false;
+    const now = performance.now();
+    st.lastResync = now;
+    st.lastSeek = now;          // the rebuffer that follows is ours, not a stall
+    st.behindSince = null;
+    release();
+    call(mp, 'pause');
+    setTimeout(() => call(mp, 'play'), 150);
+    return true;
+  }
+
+  // Automatic version: latency sits far above what this stream held earlier while the
+  // buffer has nothing to skip. Rate-limited and capped, so a stream that simply
+  // cannot do better is left alone after a few tries.
+  function watchBehind(now, live, lat, buf, paused) {
+    const ch = channelName();
+    if (ch !== st.channel) {
+      st.channel = ch;
+      st.baseLat = Infinity;
+      st.behindSince = null;
+      st.resyncs = 0;
+      st.baseFrom = now;        // st.hist still holds the previous channel's samples
+    }
+    if (!live || paused || !S.catchUp) { st.behindSince = null; return; }
+
+    // Baseline = the lowest latency held for a whole window (its highest reading),
+    // so one stray low sample can't set it. The current sample is already in st.hist.
+    const h = st.hist;
+    let hi = lat, covered = false;
+    for (let i = h.length - 1; i >= 0; i--) {
+      if (h[i].t < st.baseFrom) break;
+      if (now - h[i].t > BASE_WINDOW_MS) { covered = true; break; }
+      if (h[i].lat > hi) hi = h[i].lat;
+    }
+    if (covered && hi < st.baseLat) st.baseLat = hi;
+
+    const stuck = lat - st.baseLat > BEHIND_BY && (buf ?? 0) - ctl.bufTarget <= C.BIG_GAP;
+    if (!stuck) { st.behindSince = null; return; }
+    st.behindSince ??= now;
+    if (now - st.behindSince > BEHIND_FOR_MS && now - st.lastResync > RESYNC_EVERY_MS &&
+        st.resyncs < RESYNC_MAX && resync()) st.resyncs++;
   }
 
   function onPlay() { st.lastPlay = performance.now(); }
@@ -364,9 +431,13 @@
     }
 
     if (video && lat !== undefined && buf !== undefined) {
-      const r = ctl.step({ now, dt, lat, buf, playing: live && !video.paused, lastSeek: st.lastSeek }, S);
+      // Throttle on the last seek *attempt*: if a seek can't be carried out (nothing
+      // seekable in video.buffered), the next ticks must fall back to speeding up
+      // instead of asking for the same impossible seek forever at 1×.
+      const lastSeek = Math.max(st.lastSeek, st.lastSeekTry);
+      const r = ctl.step({ now, dt, lat, buf, playing: live && !video.paused, lastSeek }, S);
       if (r.targetChanged) saveBufTarget();
-      if (r.seek) seekBy(r.seek);
+      if (r.seek) { st.lastSeekTry = now; seekBy(r.seek); }
       else setRate(ctl.rate);
     } else release();
 
@@ -375,6 +446,7 @@
       while (st.hist.length && now - st.hist[0].t > HISTORY_MS) st.hist.shift();
       bc?.postMessage({ channel: channelName(), lat, buf, rate: ctl.rate });
     }
+    watchBehind(now, live, lat, buf, !!video?.paused);
 
     badge.render();
   }

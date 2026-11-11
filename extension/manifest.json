@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Latency Catch-Up for Twitch",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Shows live stream latency on the Twitch player and automatically catches up to the live edge.",
   "minimum_chrome_version": "111",
   "permissions": ["storage"],
